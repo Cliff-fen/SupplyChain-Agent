@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector: { matchLabels: { app: {{ .Release.Name }}-worker } }
+  template:
+    metadata: { labels: { app: {{ .Release.Name }}-worker } }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - name: temporary
+          emptyDir: {}
+        - name: working-data
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" .Release.Name) }}
+      containers:
+        - name: worker
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: temporary, mountPath: /tmp }
+            - { name: working-data, mountPath: /data }
+          image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
+          command: ["celery"]
+          args: ["-A", "scripts.worker.celery_app", "worker", "--loglevel=INFO", "--queues=analysis"]
+          envFrom:
+            - configMapRef: { name: {{ .Release.Name }}-config }
+            - secretRef: { name: {{ .Values.existingSecret }} }
+          resources: {{- toYaml .Values.worker.resources | nindent 12 }}
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import socket, subprocess; subprocess.run(['celery','-A','scripts.worker:celery_app','inspect','ping','--destination','celery@'+socket.gethostname(),'--timeout','5'],check=True,timeout=10)"]
+            initialDelaySeconds: 20
+            periodSeconds: 30
+---
+{{- if .Values.workerAutoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: { name: {{ .Release.Name }}-worker }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ .Release.Name }}-worker }
+  minReplicas: {{ .Values.workerAutoscaling.minReplicas }}
+  maxReplicas: {{ .Values.workerAutoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: {{ .Values.workerAutoscaling.targetCPUUtilizationPercentage }} } }
+{{- end }}

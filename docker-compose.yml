@@ -1,0 +1,252 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: supplymind
+      POSTGRES_USER: supplymind
+      POSTGRES_PASSWORD: supplymind
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supplymind -d supplymind"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes: [redis_data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  demo-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: supplychain
+      POSTGRES_USER: supplymind_demo_admin
+      POSTGRES_PASSWORD: supplymind-demo-admin
+    volumes:
+      - ./database/seeds/postgresql/001_supply_chain.sql:/docker-entrypoint-initdb.d/001_supply_chain.sql:ro
+      - ./database/seeds/postgresql/099_readonly.sql:/docker-entrypoint-initdb.d/099_readonly.sql:ro
+      - demo_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supplymind_ro -d supplychain"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+  retail-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: online_retail
+      POSTGRES_USER: supplymind_demo_admin
+      POSTGRES_PASSWORD: supplymind-demo-admin
+    volumes:
+      - retail_postgres_data:/var/lib/postgresql/data
+      - ./database/seeds/postgresql/099_readonly.sql:/docker-entrypoint-initdb.d/099_readonly.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supplymind_ro -d online_retail"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+  demo-mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: supplychain
+      MYSQL_USER: supplymind_ro
+      MYSQL_PASSWORD: supplymind-demo-ro
+      MYSQL_ROOT_PASSWORD: supplymind-root-local-change-me
+    volumes:
+      - ./database/seeds/mysql/001_supply_chain.sql:/docker-entrypoint-initdb.d/001_supply_chain.sql:ro
+      - ./database/seeds/mysql/099_readonly.sql:/docker-entrypoint-initdb.d/099_readonly.sql:ro
+      - demo_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u supplymind_ro -psupplymind-demo-ro"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: supplymind
+      MINIO_ROOT_PASSWORD: supplymind-local-change-me
+    volumes: [minio_data:/data]
+    ports: ["9000:9000", "9001:9001"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  minio-init:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["mc alias set local http://minio:9000 supplymind supplymind-local-change-me && mc mb --ignore-existing local/supplymind"]
+    depends_on:
+      minio: { condition: service_healthy }
+  api:
+    build: ./backend
+    env_file: ${SUPPLYMIND_ENV_FILE:-.env}
+    environment:
+      SUPPLYMIND_DATABASE_URL: postgresql+psycopg://supplymind:supplymind@postgres:5432/supplymind
+      SUPPLYMIND_REDIS_URL: redis://redis:6379/0
+      SUPPLYMIND_INGESTION_MODE: broker
+      SUPPLYMIND_DOCUMENT_DIRECTORY: /data/documents
+      SUPPLYMIND_REPORT_DIRECTORY: /data/reports
+      SUPPLYMIND_S3_ENDPOINT: http://minio:9000
+      SUPPLYMIND_S3_BUCKET: supplymind
+      SUPPLYMIND_S3_ACCESS_KEY: supplymind
+      SUPPLYMIND_S3_SECRET_KEY: supplymind-local-change-me
+      SUPPLYMIND_MCP_INTERNAL_URL: http://mcp-server:8001/mcp
+    ports: ["8000:8000"]
+    volumes:
+      - documents_data:/data/documents
+      - reports_data:/data/reports
+      - ./docs/knowledge-base:/app/docs/knowledge-base:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+      minio: { condition: service_healthy }
+      demo-postgres: { condition: service_healthy }
+      retail-postgres: { condition: service_healthy }
+      demo-mysql: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/live', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  worker:
+    build: ./backend
+    command: celery -A scripts.worker.celery_app worker --loglevel=INFO --queues=analysis
+    env_file: ${SUPPLYMIND_ENV_FILE:-.env}
+    environment:
+      SUPPLYMIND_DATABASE_URL: postgresql+psycopg://supplymind:supplymind@postgres:5432/supplymind
+      SUPPLYMIND_REDIS_URL: redis://redis:6379/0
+      SUPPLYMIND_INGESTION_MODE: broker
+      SUPPLYMIND_DOCUMENT_DIRECTORY: /data/documents
+      SUPPLYMIND_REPORT_DIRECTORY: /data/reports
+      SUPPLYMIND_S3_ENDPOINT: http://minio:9000
+      SUPPLYMIND_S3_BUCKET: supplymind
+      SUPPLYMIND_S3_ACCESS_KEY: supplymind
+      SUPPLYMIND_S3_SECRET_KEY: supplymind-local-change-me
+      SUPPLYMIND_MCP_INTERNAL_URL: http://mcp-server:8001/mcp
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      mcp-server: { condition: service_healthy }
+    volumes:
+      - documents_data:/data/documents
+      - reports_data:/data/reports
+      - ./docs/knowledge-base:/app/docs/knowledge-base:ro
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A scripts.worker.celery_app inspect ping --timeout=2 | grep -q pong"]
+      interval: 20s
+      timeout: 8s
+      retries: 6
+  beat:
+    build: ./backend
+    command: celery -A scripts.worker.celery_app beat --loglevel=INFO --schedule=/tmp/celerybeat-schedule
+    env_file: ${SUPPLYMIND_ENV_FILE:-.env}
+    environment:
+      SUPPLYMIND_DATABASE_URL: postgresql+psycopg://supplymind:supplymind@postgres:5432/supplymind
+      SUPPLYMIND_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  mcp-server:
+    build: ./backend
+    command: python -m scripts.mcp_server
+    env_file: ${SUPPLYMIND_ENV_FILE:-.env}
+    environment:
+      SUPPLYMIND_DATABASE_URL: postgresql+psycopg://supplymind:supplymind@postgres:5432/supplymind
+      SUPPLYMIND_REDIS_URL: redis://redis:6379/0
+      SUPPLYMIND_DOCUMENT_DIRECTORY: /data/documents
+      SUPPLYMIND_REPORT_DIRECTORY: /data/reports
+      SUPPLYMIND_S3_ENDPOINT: http://minio:9000
+      SUPPLYMIND_S3_BUCKET: supplymind
+      SUPPLYMIND_S3_ACCESS_KEY: supplymind
+      SUPPLYMIND_S3_SECRET_KEY: supplymind-local-change-me
+    ports: ["8001:8001"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - documents_data:/data/documents
+      - reports_data:/data/reports
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('127.0.0.1',8001),2); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  frontend:
+    build: ./frontend
+    environment: { VITE_API_BASE_URL: http://localhost:8000/api/v1 }
+    ports: ["5173:5173"]
+    depends_on: [api]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:5173/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  oidc-mock:
+    build: ./backend
+    profiles: [oidc]
+    command: uvicorn scripts.oidc_mock:app --host 0.0.0.0 --port 8081
+    ports: ["8081:8081"]
+  litellm:
+    image: ghcr.io/berriai/litellm:main-v1.74.9-stable
+    profiles: [enterprise-ai]
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "2"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-supplymind-local-change-me}
+      SUPPLYMIND_UPSTREAM_CHAT_BASE_URL: ${SUPPLYMIND_UPSTREAM_CHAT_BASE_URL:-https://api.openai.com/v1}
+      SUPPLYMIND_UPSTREAM_CHAT_MODEL: ${SUPPLYMIND_UPSTREAM_CHAT_MODEL:-gpt-4.1-mini}
+      SUPPLYMIND_UPSTREAM_CHAT_API_KEY: ${SUPPLYMIND_UPSTREAM_CHAT_API_KEY:-}
+      SUPPLYMIND_UPSTREAM_EMBEDDING_MODEL: ${SUPPLYMIND_UPSTREAM_EMBEDDING_MODEL:-text-embedding-3-large}
+    volumes: ["./infra/litellm-config.yaml:/app/config.yaml:ro"]
+    ports: ["4000:4000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=3).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    profiles: [observability]
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes: ["./infra/otel-collector.yaml:/etc/otelcol/config.yaml:ro"]
+    ports: ["4317:4317", "4318:4318", "8889:8889"]
+    depends_on: [phoenix]
+  phoenix:
+    image: arizephoenix/phoenix:version-11.13.2
+    profiles: [observability]
+    environment:
+      PHOENIX_WORKING_DIR: /data
+    volumes: [phoenix_data:/data]
+    ports: ["6006:6006"]
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: [observability]
+    volumes: ["./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: [observability]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: supplymind-local-change-me
+    volumes:
+      - "./infra/grafana/provisioning:/etc/grafana/provisioning:ro"
+      - "./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro"
+    ports: ["3000:3000"]
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  documents_data:
+  reports_data:
+  demo_postgres_data:
+  retail_postgres_data:
+  demo_mysql_data:
+  phoenix_data:

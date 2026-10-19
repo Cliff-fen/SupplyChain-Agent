@@ -1,0 +1,13 @@
+services:
+  api:
+    environment:
+      SUPPLYMIND_OIDC_ISSUER: http://host.docker.internal:8081
+      SUPPLYMIND_OIDC_CLIENT_ID: supplymind-local
+      SUPPLYMIND_OIDC_CLIENT_SECRET: supplymind-local-secret
+      SUPPLYMIND_OIDC_AUTO_PROVISION: "true"
+    depends_on:
+      oidc-mock:
+        condition: service_started
+  oidc-mock:
+    environment:
+      SUPPLYMIND_OIDC_MOCK_ISSUER: http://host.docker.internal:8081

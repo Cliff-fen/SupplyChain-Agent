@@ -1,0 +1,16 @@
+services:
+  api:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      SUPPLYMIND_INGESTION_MODE: eager
+    volumes:
+      - ./backend:/app
+      - documents_data:/data/documents
+      - reports_data:/data/reports
+  worker:
+    environment:
+      SUPPLYMIND_INGESTION_MODE: broker
+    volumes:
+      - ./backend:/app
+      - documents_data:/data/documents
+      - reports_data:/data/reports

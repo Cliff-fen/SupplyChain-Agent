@@ -1,0 +1,77 @@
+# Usage: docker compose --env-file .env.trial -f docker-compose.yml -f docker-compose.trial.yml ...
+# This override deliberately separates migration from API startup.
+services:
+  api:
+    image: supplymind/api:${SUPPLYMIND_RELEASE_TAG:?Set an immutable release tag}
+    env_file: ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
+    command: ["sh", "-c", "python -m scripts.trial_preflight && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    environment:
+      SUPPLYMIND_ENV: trial
+      SUPPLYMIND_AUTO_CREATE_SCHEMA: "false"
+      SUPPLYMIND_S3_ACCESS_KEY: ${SUPPLYMIND_S3_ACCESS_KEY:?Set the object-storage access key}
+      SUPPLYMIND_S3_SECRET_KEY: ${SUPPLYMIND_S3_SECRET_KEY:?Set the object-storage secret key}
+  worker:
+    image: supplymind/api:${SUPPLYMIND_RELEASE_TAG:?Set an immutable release tag}
+    env_file: ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
+    command: ["sh", "-c", "python -m scripts.trial_preflight && celery -A scripts.worker.celery_app worker --loglevel=INFO --queues=analysis"]
+    environment:
+      SUPPLYMIND_ENV: trial
+      SUPPLYMIND_AUTO_CREATE_SCHEMA: "false"
+      SUPPLYMIND_S3_ACCESS_KEY: ${SUPPLYMIND_S3_ACCESS_KEY:?Set the object-storage access key}
+      SUPPLYMIND_S3_SECRET_KEY: ${SUPPLYMIND_S3_SECRET_KEY:?Set the object-storage secret key}
+  beat:
+    image: supplymind/api:${SUPPLYMIND_RELEASE_TAG:?Set an immutable release tag}
+    command: ["sh", "-c", "python -m scripts.trial_preflight && celery -A scripts.worker.celery_app beat --loglevel=INFO --schedule=/tmp/celerybeat-schedule"]
+    env_file: ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
+    environment:
+      SUPPLYMIND_ENV: trial
+      SUPPLYMIND_DATABASE_URL: postgresql+psycopg://supplymind:supplymind@postgres:5432/supplymind
+      SUPPLYMIND_REDIS_URL: redis://redis:6379/0
+      SUPPLYMIND_INGESTION_MODE: broker
+      SUPPLYMIND_DOCUMENT_DIRECTORY: /data/documents
+      SUPPLYMIND_REPORT_DIRECTORY: /data/reports
+      SUPPLYMIND_S3_ENDPOINT: http://minio:9000
+      SUPPLYMIND_S3_ACCESS_KEY: ${SUPPLYMIND_S3_ACCESS_KEY:?Set the object-storage access key}
+      SUPPLYMIND_S3_SECRET_KEY: ${SUPPLYMIND_S3_SECRET_KEY:?Set the object-storage secret key}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    volumes:
+      - documents_data:/data/documents
+      - reports_data:/data/reports
+  mcp-server:
+    image: supplymind/api:${SUPPLYMIND_RELEASE_TAG:?Set an immutable release tag}
+    env_file: ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
+    command: ["sh", "-c", "python -m scripts.trial_preflight && python -m scripts.mcp_server"]
+    environment:
+      SUPPLYMIND_ENV: trial
+      SUPPLYMIND_AUTO_CREATE_SCHEMA: "false"
+      SUPPLYMIND_DATABASE_URL: postgresql+psycopg://supplymind:supplymind@postgres:5432/supplymind
+      SUPPLYMIND_REDIS_URL: redis://redis:6379/0
+      SUPPLYMIND_S3_ENDPOINT: http://minio:9000
+      SUPPLYMIND_S3_ACCESS_KEY: ${SUPPLYMIND_S3_ACCESS_KEY:?Set the object-storage access key}
+      SUPPLYMIND_S3_SECRET_KEY: ${SUPPLYMIND_S3_SECRET_KEY:?Set the object-storage secret key}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  migrate:
+    image: supplymind/api:${SUPPLYMIND_RELEASE_TAG:?Set an immutable release tag}
+    profiles: [trial]
+    command: ["sh", "-c", "python -m scripts.trial_preflight && alembic upgrade head"]
+    env_file: ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
+    environment:
+      SUPPLYMIND_ENV: trial
+      SUPPLYMIND_DATABASE_URL: postgresql+psycopg://supplymind:supplymind@postgres:5432/supplymind
+      SUPPLYMIND_S3_ENDPOINT: http://minio:9000
+      SUPPLYMIND_S3_ACCESS_KEY: ${SUPPLYMIND_S3_ACCESS_KEY:?Set the object-storage access key}
+      SUPPLYMIND_S3_SECRET_KEY: ${SUPPLYMIND_S3_SECRET_KEY:?Set the object-storage secret key}
+    depends_on:
+      postgres: { condition: service_healthy }
+  frontend:
+    image: supplymind/frontend:${SUPPLYMIND_RELEASE_TAG:?Set an immutable release tag}
+  minio:
+    environment:
+      MINIO_ROOT_USER: ${SUPPLYMIND_S3_ACCESS_KEY:?Set the object-storage access key}
+      MINIO_ROOT_PASSWORD: ${SUPPLYMIND_S3_SECRET_KEY:?Set the object-storage secret key}
+  minio-init:
+    command: ["mc alias set local http://minio:9000 ${SUPPLYMIND_S3_ACCESS_KEY:?Set the object-storage access key} ${SUPPLYMIND_S3_SECRET_KEY:?Set the object-storage secret key} && mc mb --ignore-existing local/supplymind"]

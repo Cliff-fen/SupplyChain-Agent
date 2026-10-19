@@ -1,0 +1,4 @@
+title = "SupplyChain Agent secret scanning"
+
+[extend]
+useDefault = true

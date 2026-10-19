@@ -1,0 +1,102 @@
+name: source-checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y fonts-wqy-zenhei
+      - run: pip install ".[dev]"
+      - run: pytest -q
+      - run: python -m scripts.evaluation_gate
+      - run: ruff check app scripts tests
+      - run: python -m compileall -q app
+      - run: test "$(alembic heads | wc -l)" -eq 1
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint infra/helm/supplymind
+      - run: helm template supplymind infra/helm/supplymind > /tmp/supplymind-manifest.yaml
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: SUPPLYMIND_ENV_FILE=.env.example docker compose config --quiet
+      - run: SUPPLYMIND_TRIAL_ENV_FILE=.env.trial.example docker compose --env-file .env.trial.example -f docker-compose.yml -f docker-compose.trial.yml config --quiet
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "./backend[dev]" pip-audit
+      # The local application is reviewed as source, not a public PyPI package.
+      # Audit every installed third-party dependency without silently skipping it.
+      - run: pip freeze --exclude supplymind-api > /tmp/audit-requirements.txt
+      - run: pip-audit --strict --no-deps --disable-pip -r /tmp/audit-requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --prefix frontend
+      - run: npm audit --prefix frontend --audit-level=high
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+      - run: docker build -t supplymind-api:ci ./backend
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: supplymind-api:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+      - uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: supplymind-sbom.cdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: supplymind-sbom
+          path: supplymind-sbom.cdx.json
