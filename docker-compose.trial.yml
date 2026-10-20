@@ -1,9 +1,11 @@
 # Usage: docker compose --env-file .env.trial -f docker-compose.yml -f docker-compose.trial.yml ...
 # This override deliberately separates migration from API startup.
+# Compose 2.24.4+ replaces the development env_file instead of merging credentials.
 services:
   api:
     image: supplymind/api:${SUPPLYMIND_RELEASE_TAG:?Set an immutable release tag}
-    env_file: ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
+    env_file: !override
+      - ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
     command: ["sh", "-c", "python -m scripts.trial_preflight && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
     environment:
       SUPPLYMIND_ENV: trial
@@ -12,7 +14,8 @@ services:
       SUPPLYMIND_S3_SECRET_KEY: ${SUPPLYMIND_S3_SECRET_KEY:?Set the object-storage secret key}
   worker:
     image: supplymind/api:${SUPPLYMIND_RELEASE_TAG:?Set an immutable release tag}
-    env_file: ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
+    env_file: !override
+      - ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
     command: ["sh", "-c", "python -m scripts.trial_preflight && celery -A scripts.worker.celery_app worker --loglevel=INFO --queues=analysis"]
     environment:
       SUPPLYMIND_ENV: trial
@@ -22,7 +25,8 @@ services:
   beat:
     image: supplymind/api:${SUPPLYMIND_RELEASE_TAG:?Set an immutable release tag}
     command: ["sh", "-c", "python -m scripts.trial_preflight && celery -A scripts.worker.celery_app beat --loglevel=INFO --schedule=/tmp/celerybeat-schedule"]
-    env_file: ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
+    env_file: !override
+      - ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
     environment:
       SUPPLYMIND_ENV: trial
       SUPPLYMIND_DATABASE_URL: postgresql+psycopg://supplymind:supplymind@postgres:5432/supplymind
@@ -41,7 +45,8 @@ services:
       - reports_data:/data/reports
   mcp-server:
     image: supplymind/api:${SUPPLYMIND_RELEASE_TAG:?Set an immutable release tag}
-    env_file: ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
+    env_file: !override
+      - ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
     command: ["sh", "-c", "python -m scripts.trial_preflight && python -m scripts.mcp_server"]
     environment:
       SUPPLYMIND_ENV: trial
@@ -58,7 +63,8 @@ services:
     image: supplymind/api:${SUPPLYMIND_RELEASE_TAG:?Set an immutable release tag}
     profiles: [trial]
     command: ["sh", "-c", "python -m scripts.trial_preflight && alembic upgrade head"]
-    env_file: ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
+    env_file: !override
+      - ${SUPPLYMIND_TRIAL_ENV_FILE:-.env.trial}
     environment:
       SUPPLYMIND_ENV: trial
       SUPPLYMIND_DATABASE_URL: postgresql+psycopg://supplymind:supplymind@postgres:5432/supplymind

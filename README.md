@@ -89,7 +89,7 @@ Verifier 检查直接回答是否为空，以及是否至少存在查询行或�
 
 ## 本地启动
 
-需要 Docker 与 Docker Compose。仅运行容器时，不必额外安装本地 Python 或 Node.js。
+需要 Docker 与 Docker Compose。试运行配置使用环境文件覆盖功能，要求 Compose 2.24.4 或更新版本。仅运行容器时，不必额外安装本地 Python 或 Node.js。
 
 ```bash
 git clone https://github.com/Cliff-fen/SupplyChain-Agent.git
